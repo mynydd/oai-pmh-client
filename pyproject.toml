@@ -6,6 +6,8 @@ authors = ["Paul Storey <paul.storey@bodleian.ox.ac.uk>"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
+Sickle = "^0.7.0"
+defusedxml = "^0.7.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^5.2"
