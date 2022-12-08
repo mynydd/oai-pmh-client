@@ -1,51 +1,47 @@
-from pathlib import Path
-from typing import Dict, List
-from xml.etree.ElementTree import Element
+from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
+from threading import Thread
+import pytest
+from oai_pmh_client.harvester import extract_resumption_token, Harvester, HttpBadResponse
 
-from lxml import etree
+BAD_HTTP_RESPONSE: str = """HTTP/1.1 404
+Content-Length: 0
+"""
 
-from oai_pmh_client.harvester import Harvester
+class UnhappyHttpRequestHandler(BaseHTTPRequestHandler):
 
-xpath_namespaces : Dict[str,str] = {
-    "oai-pmh": "http://www.openarchives.org/OAI/2.0/",
-    "ead": "urn:isbn:1-931666-22-9",
-    "tei": "http://www.tei-c.org/ns/1.0",
-    "xml": "http://www.w3.org/XML/1998/namespace" }
+    def do_GET(self) -> None:
+        self.wfile.write(BAD_HTTP_RESPONSE.encode())
 
-def find(e: Element, xpath: str) -> List[Element]:
-    return e.findall(xpath, namespaces=xpath_namespaces)
 
-def describes_single_item(resource: Element) -> bool:
-    elements: List[Element] = find(resource, "./ead:archdesc")
-    assert 1 == len(elements)
-    level: str = elements[0].get("level")
-    return "item" == level
+class HttpServer(Thread):
 
-def record_id(oai_pmh_response_record: Element) -> str:
-    elements: List[Element] = find(oai_pmh_response_record, "./oai-pmh:header/oai-pmh:identifier")
-    assert 1 == len(elements)
-    full_path: str = "".join(elements[0].itertext())
-    return full_path[full_path.rfind("/") + 1:]
+    def __init__(self, port: int, request_handler_class) -> None:
+        self._server = TCPServer(("", port), request_handler_class)
+        Thread.__init__(self)
 
-XPATH_OAI_PMH_RESPONSE_RECORD: str = ".//oai-pmh:record"
-XPATH_ASPACE_RESOURCE: str = ".//ead:ead"
+    def run(self):
+        self._server.serve_forever()
 
-EAD_FILE_DIR: str = "./ead_files"
+    def stop(self):
+        self._server.shutdown()
 
-def write_ead_file(ead: Element, resource_id: str) -> None:
-    with open(Path(EAD_FILE_DIR, f"{resource_id}.xml"), mode="w", encoding="utf-8") as f:
-        f.write(etree.tostring(ead, encoding="unicode", pretty_print=True))
 
-def test_extract_all():
-    harvester: Harvester = Harvester("https://archives-qa.bodleian.ox.ac.uk/oai")
-    callback_count: int = 0
-    def callback(oai_pmh_response: Element) -> bool:
-        for record in find(oai_pmh_response, XPATH_OAI_PMH_RESPONSE_RECORD):
-            for resource in find(record, XPATH_ASPACE_RESOURCE):
-                if describes_single_item(resource):
-                    write_ead_file(resource, record_id(record))
-        nonlocal callback_count
-        callback_count += 1
-        return callback_count < 10
-    harvester.extract_all(callback, predefined_set="item")
-    assert callback_count > 0
+def test_extract_resumption_token():
+    s: str = "Archives</corpname>\n  </controlaccess>\n <dsc/>\n</record><resumptionToken>eyJtZXRhZGF0YV9wcmVmDgyOH0=</resumptionToken>blahblah"
+    assert "eyJtZXRhZGF0YV9wcmVmDgyOH0=" == extract_resumption_token(s)
+
+
+def test_bad_url() -> None:
+    PORT: int = 8091
+    server: HttpServer = HttpServer(PORT, UnhappyHttpRequestHandler)
+    server.start()
+    try:
+        with pytest.raises(HttpBadResponse):
+            harvester: Harvester = Harvester(f"http://localhost:{str(PORT)}")
+            def callback(s: str) -> bool:
+                return False
+            harvester.extract_all(callback)
+    finally:
+        server.stop()
+        server.join()
